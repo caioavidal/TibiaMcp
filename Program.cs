@@ -1,9 +1,16 @@
+using System.Net;
 using TibiaMcp.Server.Services;
 using TibiaMcp.Server.Tools;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// ── HttpClient for wiki scraping (polite defaults) ──────────────────────
+// ── HttpClient for wiki scraping ────────────────────────────────────────
+// Fandom uses Cloudflare which blocks .NET's HttpClient TLS fingerprint.
+// We use a CookieContainer to capture the __cf_bm cookie from the 403
+// challenge response, then reuse it on the MediaWiki API (which is
+// allowed through with the cookie).
+var cookieContainer = new CookieContainer();
+
 builder.Services.AddHttpClient<ConditionWikiService>(client =>
 {
     client.BaseAddress = new Uri("https://tibia.fandom.com");
@@ -19,16 +26,6 @@ builder.Services.AddHttpClient<ConditionWikiService>(client =>
         "image/avif,image/webp,image/apng,*/*;q=0.8");
 
     client.DefaultRequestHeaders.AcceptLanguage.ParseAdd("en-US,en;q=0.9");
-    client.DefaultRequestHeaders.Add("Accept-Encoding", "gzip, deflate, br");
-    client.DefaultRequestHeaders.Add("Sec-Fetch-Dest", "document");
-    client.DefaultRequestHeaders.Add("Sec-Fetch-Mode", "navigate");
-    client.DefaultRequestHeaders.Add("Sec-Fetch-Site", "none");
-    client.DefaultRequestHeaders.Add("Sec-Fetch-User", "?1");
-    client.DefaultRequestHeaders.Add("Upgrade-Insecure-Requests", "1");
-    client.DefaultRequestHeaders.Add("Sec-Ch-Ua",
-        "\"Not_A Brand\";v=\"8\", \"Chromium\";v=\"120\", \"Google Chrome\";v=\"120\"");
-    client.DefaultRequestHeaders.Add("Sec-Ch-Ua-Mobile", "?0");
-    client.DefaultRequestHeaders.Add("Sec-Ch-Ua-Platform", "\"Windows\"");
 
 }).ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
 {
@@ -37,6 +34,8 @@ builder.Services.AddHttpClient<ConditionWikiService>(client =>
     AutomaticDecompression = System.Net.DecompressionMethods.GZip
                               | System.Net.DecompressionMethods.Deflate
                               | System.Net.DecompressionMethods.Brotli,
+    UseCookies = true,
+    CookieContainer = cookieContainer,
 });
 
 // ── MCP Server ────────────────────────────────────────────────────────────

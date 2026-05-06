@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using HtmlAgilityPack;
 using TibiaMcp.Server.Models;
@@ -11,8 +12,13 @@ namespace TibiaMcp.Server.Services;
 public partial class ConditionWikiService
 {
     private const string WikiBaseUrl = "https://tibia.fandom.com";
+    private const string ApiBaseUrl = "https://tibia.fandom.com/api.php";
     private readonly HttpClient _httpClient;
     private readonly ILogger<ConditionWikiService> _logger;
+
+    // Cloudflare cookie management
+    private DateTime _cookieExpiry = DateTime.MinValue;
+    private readonly SemaphoreSlim _warmupLock = new(1, 1);
 
     public ConditionWikiService(HttpClient httpClient, ILogger<ConditionWikiService> logger)
     {
@@ -29,7 +35,7 @@ public partial class ConditionWikiService
     /// </summary>
     public async Task<List<Condition>> GetListingAsync(CancellationToken ct = default)
     {
-        var doc = await FetchPageAsync($"{WikiBaseUrl}/wiki/Special_Conditions", ct);
+        var doc = await FetchPageViaApiAsync("Special_Conditions", ct);
         if (doc == null) return [];
 
         return ParseListingPage(doc);
@@ -43,7 +49,7 @@ public partial class ConditionWikiService
         var pageName = name.Replace(' ', '_');
         var url = $"{WikiBaseUrl}/wiki/{Uri.EscapeDataString(pageName)}";
 
-        var doc = await FetchPageAsync(url, ct);
+        var doc = await FetchPageViaApiAsync(pageName, ct);
         if (doc == null) return null;
 
         var intro = ExtractIntroParagraph(doc);
@@ -91,36 +97,120 @@ public partial class ConditionWikiService
     }
 
     // ──────────────────────────────────────────────────────────────────────
+    //  Cloudflare bypass (cookie acquisition)
+    // ──────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Ensures we have a valid Cloudflare <c>__cf_bm</c> cookie cached.
+    /// Fandom blocks raw .NET HTTP clients with a TLS fingerprint check and
+    /// returns a 403 challenge.  However the challenge response <em>does</em>
+    /// set the <c>__cf_bm</c> cookie.  We capture it and reuse it on the
+    /// MediaWiki API endpoint, which accepts it.
+    /// </summary>
+    private async Task EnsureCookieAsync(CancellationToken ct)
+    {
+        // The cookie is valid for ~30 min; refresh when 5 min remain.
+        // NB: _cookieExpiry starts as DateTime.MinValue, so we guard against
+        //     arithmetic underflow by checking for the default first.
+        if (_cookieExpiry != DateTime.MinValue &&
+            DateTime.UtcNow < _cookieExpiry.AddMinutes(-5))
+            return;
+
+        await _warmupLock.WaitAsync(ct);
+        try
+        {
+            // Double-check after acquiring the lock
+            if (_cookieExpiry != DateTime.MinValue &&
+                DateTime.UtcNow < _cookieExpiry.AddMinutes(-5))
+                return;
+
+            _logger.LogDebug("Refreshing Cloudflare cookie via warm-up request…");
+
+            // Any GET to the Fandom domain sets the cookie in the 403 response.
+            // We hit the base URL because it's lightweight.
+            using var response = await _httpClient.GetAsync(WikiBaseUrl, ct);
+
+            // Cloudflare always sends a new __cf_bm on challenge responses.
+            // The CookieContainer inside the handler automatically captures it.
+            _cookieExpiry = DateTime.UtcNow.AddMinutes(25);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Warm-up request failed (non-fatal)");
+        }
+        finally
+        {
+            _warmupLock.Release();
+        }
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
     //  HTTP / HTML helpers
     // ──────────────────────────────────────────────────────────────────────
 
-    private async Task<HtmlDocument?> FetchPageAsync(string url, CancellationToken ct)
+    /// <summary>
+    /// Fetches a wiki page via the MediaWiki API (<c>action=parse</c>).
+    /// The API is far more lenient than the main HTML endpoint and accepts
+    /// requests that carry a valid <c>__cf_bm</c> cookie.
+    /// </summary>
+    /// <param name="pageName">Wiki page title (e.g. "Special_Conditions", "Haste").</param>
+    private async Task<HtmlDocument?> FetchPageViaApiAsync(string pageName, CancellationToken ct)
     {
+        // 1. Ensure we have a Cloudflare cookie before hitting the API.
+        await EnsureCookieAsync(ct);
+
+        // 2. Build the API URL.
+        //    The MediaWiki parse API returns parsed HTML directly.
+        var apiUrl = $"{ApiBaseUrl}?action=parse&page={Uri.EscapeDataString(pageName)}&format=json&prop=text&redirects=";
+
         try
         {
-            _logger.LogDebug("Fetching page: {Url}", url);
+            _logger.LogDebug("Fetching wiki page via API: {PageName}", pageName);
 
-            var response = await _httpClient.GetAsync(url, ct);
+            var response = await _httpClient.GetAsync(apiUrl, ct);
             response.EnsureSuccessStatusCode();
 
-            var html = await response.Content.ReadAsStringAsync(ct);
-            var doc = new HtmlDocument();
-            doc.LoadHtml(html);
-            return doc;
+            var json = await response.Content.ReadAsStringAsync(ct);
+            using var jsonDoc = JsonDocument.Parse(json);
+
+            // Validate the response structure.
+            if (!jsonDoc.RootElement.TryGetProperty("parse", out var parse))
+            {
+                _logger.LogWarning("API response missing 'parse' property for {PageName}", pageName);
+                return null;
+            }
+
+            var html = parse.GetProperty("text").GetProperty("*").GetString();
+            if (string.IsNullOrWhiteSpace(html))
+            {
+                _logger.LogWarning("API returned empty content for {PageName}", pageName);
+                return null;
+            }
+
+            // The API returns the inner content of the mw-parser-output div.
+            // Wrap it in a structure that our existing XPath-based parsers expect.
+            var htmlDoc = new HtmlDocument();
+            htmlDoc.LoadHtml($"<div class=\"mw-parser-output\">{html}</div>");
+            return htmlDoc;
         }
         catch (HttpRequestException ex)
         {
-            _logger.LogWarning(ex, "HTTP error fetching {Url}", url);
+            _logger.LogWarning(ex, "HTTP error fetching {PageName} via API", pageName);
             return null;
         }
         catch (TaskCanceledException)
         {
-            _logger.LogWarning("Request timed out for {Url}", url);
+            _logger.LogWarning("Request timed out for {PageName}", pageName);
+            return null;
+        }
+        catch (JsonException ex)
+        {
+            _logger.LogError(ex, "Invalid JSON response for {PageName}", pageName);
             return null;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Unexpected error fetching {Url}", url);
+            _logger.LogError(ex, "Unexpected error fetching {PageName}", pageName);
             return null;
         }
     }
