@@ -1,23 +1,26 @@
-# 🎮 TibiaMcp — MCP Server for Tibia Special Conditions
+# 🎮 TibiaMcp — MCP Server for Tibia
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![.NET](https://img.shields.io/badge/.NET-10.0-512BD4?logo=dotnet)](https://dotnet.microsoft.com/)
 [![MCP](https://img.shields.io/badge/MCP-Model%20Context%20Protocol-6C47FF)](https://modelcontextprotocol.io)
 
-**TibiaMcp** is a [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that exposes Tibia special conditions data through AI-friendly tools. It fetches live data from the [Tibia Fandom Wiki](https://tibia.fandom.com) via the MediaWiki API and provides structured access to conditions, their effects, and detailed sections.
+**TibiaMcp** is a [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that exposes Tibia game data through AI-friendly tools. It fetches live data from the [Tibia Fandom Wiki](https://tibia.fandom.com) and other sources, providing structured access to game information.
 
-AI assistants like Claude, ChatGPT, and others can use MCP tools to query Tibia condition data in real time — no scraping needed.
+AI assistants like Claude, ChatGPT, and others can use MCP tools to query Tibia data in real time — no scraping needed.
+
+> 📌 **Currently available:** Special Conditions tools. More tools (creatures, spells, items, etc.) are planned.
 
 ---
 
 ## ✨ Features
 
-- **🧠 MCP Tools** — Query and search special conditions via standardized MCP tools
+- **🧠 MCP Tools** — Query and search game data via standardized MCP tools
 - **🌐 Live Wiki Fetching** — Pulls data directly from the Tibia Fandom Wiki via the MediaWiki API
 - **🛡️ Cloudflare Bypass** — Automatically handles Fandom's Cloudflare anti-bot protection by capturing the `__cf_bm` cookie from challenge responses and reusing it on the API endpoint
 - **💾 In-Memory Cache** — Results are cached for 2 hours (wiki content is very stable), so repeated queries are instant
 - **🧩 Section Extraction** — Parses detail pages into structured heading/content sections
 - **⚡ Async First** — Fully asynchronous, non-blocking architecture
+- **🧩 Extensible** — Easy to add new tools as the project grows
 
 ---
 
