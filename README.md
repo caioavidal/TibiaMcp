@@ -31,61 +31,8 @@ AI assistants like Claude, ChatGPT, and others can use MCP tools to query Tibia 
 | `getConditions` | List all special conditions with optional filters (`type`, `search`) |
 | `getConditionByName` | Get a single condition by name with its detailed description and sections |
 
-### getConditions
-
-Returns the full listing table with condition name, type (Harmful, Positive, Negative, Neutral, Mixed, Taints), and short effect description. Supports optional filtering:
-
-- **`type`** — Filter by condition type (e.g., `"Harmful"`, `"Positive"`)
-- **`search`** — Search by condition name substring
-
-### getConditionByName
-
-Returns a single condition with:
-- **Name**, **type**, **effect description**
-- **Detailed description** — the introductory paragraph from the condition's wiki page
-- **Sections** — structured heading/content pairs extracted from the page (e.g., "Effect", "Notes", "History", "Related Spells")
-- **Wiki URL** — direct link to the source page
 
 ---
-
-## 🏗️ Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                     AI Assistant (Claude, etc.)              │
-└─────────────────────────┬───────────────────────────────────┘
-                          │  MCP Protocol (Streamable HTTP)
-                          ▼
-┌─────────────────────────────────────────────────────────────┐
-│                   TibiaMcp MCP Server                        │
-│  ┌───────────────────────────────────────────────────────┐   │
-│  │  Tools Layer (ConditionTools)                          │   │
-│  ├───────────────────────────────────────────────────────┤   │
-│  │  Service Layer (ConditionWikiService)                  │   │
-│  │   ├── Cloudflare cookie warm-up                        │   │
-│  │   ├── MediaWiki API fetching                           │   │
-│  │   ├── HTML parsing (HtmlAgilityPack)                   │   │
-│  │   └── In-memory caching (2-hour TTL)                   │   │
-│  └───────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────┘
-                          │
-                          ▼
-              ┌──────────────────────┐
-              │  Tibia Fandom Wiki   │
-              │  (MediaWiki API)     │
-              └──────────────────────┘
-```
-
-### How the Cloudflare bypass works
-
-Fandom uses Cloudflare's anti-bot protection, which blocks .NET's `HttpClient` based on TLS fingerprinting and returns a **403** challenge page. However:
-
-1. Even the **403** challenge response sets the `__cf_bm` cookie
-2. The `CookieContainer` in the `SocketsHttpHandler` captures it automatically
-3. The MediaWiki API endpoint (`api.php?action=parse`) accepts requests that carry a valid `__cf_bm` cookie
-4. Each API call is preceded by a lightweight warm-up GET to refresh the cookie as needed
-
-This approach is lightweight, requires no external services (like FlareSolverr), and keeps the server self-contained.
 
 ### Tech Stack
 
