@@ -1,109 +1,55 @@
-using Microsoft.EntityFrameworkCore;
 using ModelContextProtocol.Server;
-using TibiaMcp.Server.Crawlers;
-using TibiaMcp.Server.Data;
 using TibiaMcp.Server.Models;
+using TibiaMcp.Server.Services;
 
 namespace TibiaMcp.Server.Tools;
 
 /// <summary>
-/// MCP tools for querying and managing Special Conditions data.
+/// MCP tools for querying Tibia Special Conditions from the wiki in real time.
 /// </summary>
 [McpServerToolType]
 public class ConditionTools
 {
-    private readonly AppDbContext _db;
-    private readonly ConditionCrawler _crawler;
-    private readonly CrawlerRunner _runner;
+    private readonly ConditionWikiService _wiki;
     private readonly ILogger<ConditionTools> _logger;
 
-    public ConditionTools(
-        AppDbContext db,
-        ConditionCrawler crawler,
-        CrawlerRunner runner,
-        ILogger<ConditionTools> logger)
+    public ConditionTools(ConditionWikiService wiki, ILogger<ConditionTools> logger)
     {
-        _db = db;
-        _crawler = crawler;
-        _runner = runner;
+        _wiki = wiki;
         _logger = logger;
     }
 
     /// <summary>
-    /// Gets all conditions from the database with optional filters.
+    /// Lists all special conditions from the Tibia wiki, with optional filters.
     /// </summary>
-    /// <param name="type">Optional filter by condition type (e.g., Harmful, Positive, Negative, Neutral).</param>
-    /// <param name="search">Optional text search on condition name.</param>
+    /// <param name="type">Filter by condition type (e.g., Harmful, Positive, Negative, Neutral).</param>
+    /// <param name="search">Search by condition name.</param>
     [McpServerTool]
     public async Task<List<Condition>> GetConditions(string? type = null, string? search = null)
     {
-        var query = _db.Conditions
-            .Include(c => c.Sections.OrderBy(s => s.SortOrder))
-            .AsQueryable();
+        var conditions = await _wiki.SearchConditionsAsync(type, search);
 
-        if (!string.IsNullOrWhiteSpace(type))
-            query = query.Where(c => c.Type == type);
+        _logger.LogInformation(
+            "Returned {Count} conditions (type={Type}, search={Search})",
+            conditions.Count, type ?? "*", search ?? "*");
 
-        if (!string.IsNullOrWhiteSpace(search))
-            query = query.Where(c => EF.Functions.ILike(c.Name, $"%{search}%"));
-
-        return await query.OrderBy(c => c.Name).ToListAsync();
+        return conditions;
     }
 
     /// <summary>
-    /// Gets a single condition by ID with all its sections.
+    /// Gets a single condition by name, including its detailed description and sections.
     /// </summary>
-    /// <param name="id">The condition ID.</param>
-    [McpServerTool]
-    public async Task<Condition?> GetConditionById(int id)
-    {
-        return await _db.Conditions
-            .Include(c => c.Sections.OrderBy(s => s.SortOrder))
-            .FirstOrDefaultAsync(c => c.Id == id);
-    }
-
-    /// <summary>
-    /// Gets a single condition by name.
-    /// </summary>
-    /// <param name="name">The condition name.</param>
+    /// <param name="name">The exact condition name (e.g., "Agony", "Bleeding").</param>
     [McpServerTool]
     public async Task<Condition?> GetConditionByName(string name)
     {
-        return await _db.Conditions
-            .Include(c => c.Sections.OrderBy(s => s.SortOrder))
-            .FirstOrDefaultAsync(c => c.Name == name);
-    }
+        var condition = await _wiki.GetConditionAsync(name);
 
-    /// <summary>
-    /// Runs the condition crawler: fetches the Special Conditions listing
-    /// and all detail pages, then saves/updates the database.
-    /// </summary>
-    [McpServerTool]
-    public async Task<string> RunConditionCrawler()
-    {
-        // Use a simple progress collector
-        var messages = new List<string>();
+        if (condition == null)
+            _logger.LogWarning("Condition '{Name}' not found on wiki.", name);
+        else
+            _logger.LogInformation("Returned condition '{Name}' with {Sections} sections.", name, condition.Sections.Count);
 
-        var result = await _runner.RunAsync(
-            progress: new Progress<string>(msg =>
-            {
-                messages.Add(msg);
-                _logger.LogInformation("Crawl progress: {Msg}", msg);
-            })
-        );
-
-        if (result.Success)
-        {
-            return $"✅ Crawl completed successfully!\n" +
-                   $"   Conditions: {result.TotalConditions}\n" +
-                   $"   Sections:   {result.TotalSections}\n" +
-                   $"   Duration:   {result.Duration.TotalSeconds:F1}s";
-        }
-
-        return $"❌ Crawl completed with errors.\n" +
-               $"   Conditions: {result.TotalConditions}\n" +
-               $"   Sections:   {result.TotalSections}\n" +
-               $"   Errors:     {result.Errors}\n" +
-               $"   Duration:   {result.Duration.TotalSeconds:F1}s";
+        return condition;
     }
 }
