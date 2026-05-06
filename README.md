@@ -51,6 +51,17 @@ AI assistants like Claude, ChatGPT, and others can use MCP tools to query Tibia 
 
 **`getSpellByWords`** looks up a spell by its cast command — useful when you see a spell being used and want to identify it.
 
+### Creatures
+
+| Tool | Description |
+|------|-------------|
+| `getCreatures` | List all creatures with optional name search (returns name, HP, exp, version) |
+| `getCreatureByName` | Get a single creature by name with full infobox data and sections |
+
+**`getCreatures`** returns the full creature listing from the wiki with name, HP, exp, version, and wiki URL for every creature. Supports optional `search` by name.
+
+**`getCreatureByName`** returns detailed infobox properties (hp, exp, speed, classification, spawn type, resistances, etc.), plus the introductory description and sections (Abilities, Location, Loot, Strategy, etc.).
+
 ---
 
 ### Tech Stack
