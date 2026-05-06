@@ -1,60 +1,47 @@
-# 🎮 TibiaMcp — MCP Server for Tibia
+# 🎮 TibiaMcp — MCP Server for Tibia Special Conditions
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![.NET](https://img.shields.io/badge/.NET-10.0-512BD4?logo=dotnet)](https://dotnet.microsoft.com/)
-[![PostgreSQL](https://img.shields.io/badge/PostgreSQL-16+-336791?logo=postgresql)](https://www.postgresql.org/)
 [![MCP](https://img.shields.io/badge/MCP-Model%20Context%20Protocol-6C47FF)](https://modelcontextprotocol.io)
 
-**TibiaMcp** is a [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that exposes Tibia game data through AI-friendly tools. It automatically crawls the [Tibia Fandom Wiki](https://tibia.fandom.com) and provides structured access to conditions, players, and guilds.
+**TibiaMcp** is a [Model Context Protocol (MCP)](https://modelcontextprotocol.io) server that exposes Tibia special conditions data through AI-friendly tools. It fetches live data from the [Tibia Fandom Wiki](https://tibia.fandom.com) via the MediaWiki API and provides structured access to conditions, their effects, and detailed sections.
 
-AI assistants like Claude, ChatGPT, and others can use MCP tools to query Tibia data in real time — no scraping needed.
+AI assistants like Claude, ChatGPT, and others can use MCP tools to query Tibia condition data in real time — no scraping needed.
 
 ---
 
 ## ✨ Features
 
-- **🧠 MCP Tools** — Query players, guilds, and special conditions via standardized MCP tools
-- **🕷️ Wiki Crawler** — Automatically scrapes the Tibia Wiki for special conditions with sections
-- **🗄️ PostgreSQL Storage** — Persists data with Entity Framework Core and efficient upserts
-- **🔄 Auto-Migration** — Database schema is created automatically on startup
+- **🧠 MCP Tools** — Query and search special conditions via standardized MCP tools
+- **🌐 Live Wiki Fetching** — Pulls data directly from the Tibia Fandom Wiki via the MediaWiki API
+- **🛡️ Cloudflare Bypass** — Automatically handles Fandom's Cloudflare anti-bot protection by capturing the `__cf_bm` cookie from challenge responses and reusing it on the API endpoint
+- **💾 In-Memory Cache** — Results are cached for 2 hours (wiki content is very stable), so repeated queries are instant
+- **🧩 Section Extraction** — Parses detail pages into structured heading/content sections
 - **⚡ Async First** — Fully asynchronous, non-blocking architecture
-- **🧩 Extensible** — Easy to add new crawlers or MCP tools
 
 ---
 
 ## 📋 Available MCP Tools
 
-### Players
-
 | Tool | Description |
 |------|-------------|
-| `getPlayers` | List players with optional filters (vocation, minLevel, isOnline) |
-| `getPlayerById` | Get a player by ID |
-| `getPlayerByName` | Get a player by name |
-| `createPlayer` | Create a new player |
-| `updatePlayerLevel` | Update a player's level and experience |
-| `setPlayerOnlineStatus` | Set a player's online status |
-| `deletePlayer` | Delete a player by ID |
+| `getConditions` | List all special conditions with optional filters (`type`, `search`) |
+| `getConditionByName` | Get a single condition by name with its detailed description and sections |
 
-### Guilds
+### getConditions
 
-| Tool | Description |
-|------|-------------|
-| `getAllGuilds` | Get all guilds with their owners |
-| `getGuildById` | Get a guild by ID with members |
-| `createGuild` | Create a new guild with an owner |
-| `addGuildMember` | Add a member to a guild |
-| `removeGuildMember` | Remove a member from a guild |
-| `deleteGuild` | Delete a guild and its members |
+Returns the full listing table with condition name, type (Harmful, Positive, Negative, Neutral, Mixed, Taints), and short effect description. Supports optional filtering:
 
-### Conditions
+- **`type`** — Filter by condition type (e.g., `"Harmful"`, `"Positive"`)
+- **`search`** — Search by condition name substring
 
-| Tool | Description |
-|------|-------------|
-| `getConditions` | Get all conditions, optionally filtered by type or name search |
-| `getConditionById` | Get a condition by ID with its sections |
-| `getConditionByName` | Get a condition by name with its sections |
-| `runConditionCrawler` | Manually trigger a full re-crawl of the Special Conditions wiki |
+### getConditionByName
+
+Returns a single condition with:
+- **Name**, **type**, **effect description**
+- **Detailed description** — the introductory paragraph from the condition's wiki page
+- **Sections** — structured heading/content pairs extracted from the page (e.g., "Effect", "Notes", "History", "Related Spells")
+- **Wiki URL** — direct link to the source page
 
 ---
 
@@ -69,27 +56,39 @@ AI assistants like Claude, ChatGPT, and others can use MCP tools to query Tibia 
 ┌─────────────────────────────────────────────────────────────┐
 │                   TibiaMcp MCP Server                        │
 │  ┌───────────────────────────────────────────────────────┐   │
-│  │  Tools Layer (PlayerTools, GuildTools, ConditionTools) │   │
+│  │  Tools Layer (ConditionTools)                          │   │
 │  ├───────────────────────────────────────────────────────┤   │
-│  │  Crawler Layer (ConditionCrawler, CrawlerRunner)       │   │
-│  ├───────────────────────────────────────────────────────┤   │
-│  │  Data Layer (AppDbContext, EF Core + Npgsql)           │   │
+│  │  Service Layer (ConditionWikiService)                  │   │
+│  │   ├── Cloudflare cookie warm-up                        │   │
+│  │   ├── MediaWiki API fetching                           │   │
+│  │   ├── HTML parsing (HtmlAgilityPack)                   │   │
+│  │   └── In-memory caching (2-hour TTL)                   │   │
 │  └───────────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────────┘
                           │
                           ▼
               ┌──────────────────────┐
-              │    PostgreSQL DB     │
+              │  Tibia Fandom Wiki   │
+              │  (MediaWiki API)     │
               └──────────────────────┘
 ```
+
+### How the Cloudflare bypass works
+
+Fandom uses Cloudflare's anti-bot protection, which blocks .NET's `HttpClient` based on TLS fingerprinting and returns a **403** challenge page. However:
+
+1. Even the **403** challenge response sets the `__cf_bm` cookie
+2. The `CookieContainer` in the `SocketsHttpHandler` captures it automatically
+3. The MediaWiki API endpoint (`api.php?action=parse`) accepts requests that carry a valid `__cf_bm` cookie
+4. Each API call is preceded by a lightweight warm-up GET to refresh the cookie as needed
+
+This approach is lightweight, requires no external services (like FlareSolverr), and keeps the server self-contained.
 
 ### Tech Stack
 
 - **.NET 10** — ASP.NET Core Minimal API
 - **ModelContextProtocol** — [MCP SDK](https://github.com/modelcontextprotocol/csharp-sdk) for .NET
-- **HtmlAgilityPack** — HTML parsing for wiki crawling
-- **Entity Framework Core** — ORM with PostgreSQL provider
-- **Npgsql** — PostgreSQL driver
+- **HtmlAgilityPack** — HTML parsing for wiki page content extraction
 
 ---
 
@@ -98,51 +97,18 @@ AI assistants like Claude, ChatGPT, and others can use MCP tools to query Tibia 
 ### Prerequisites
 
 - [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)
-- [PostgreSQL](https://www.postgresql.org/download/) 16 or later
 
-### 1. Clone & Setup
+### 1. Clone & Run
 
 ```bash
 git clone https://github.com/your-username/TibiaMcp.git
 cd TibiaMcp
-```
-
-### 2. Configure the Database
-
-Edit `appsettings.json` with your PostgreSQL connection string:
-
-```json
-{
-  "ConnectionStrings": {
-    "DefaultConnection": "Host=localhost;Port=5432;Database=tibiamcp;Username=postgres;Password=your-password"
-  }
-}
-```
-
-### 3. Create the Database
-
-```bash
-createdb tibiamcp
-```
-
-Or via `psql`:
-
-```sql
-CREATE DATABASE tibiamcp;
-```
-
-### 4. Run the Server
-
-```bash
 dotnet run
 ```
 
-The server will:
-- ✅ Auto-create database tables
-- 🕷️ Start crawling the Tibia Wiki for special conditions
-- 🔌 Expose the MCP endpoint at `http://localhost:5000/mcp`
+The server will start at `http://localhost:5000`.
 
-### 5. Health Check
+### 2. Health Check
 
 ```bash
 curl http://localhost:5000/
@@ -156,6 +122,36 @@ Expected response:
   "status": "running",
   "mcpEndpoint": "/mcp"
 }
+```
+
+### 3. Test the Tools
+
+```bash
+# List all conditions
+curl -s -X POST "http://localhost:5000/mcp" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "method": "tools/call",
+    "params": {
+      "name": "getConditions",
+      "arguments": {}
+    },
+    "id": 1
+  }' | jq .
+
+# Get a specific condition
+curl -s -X POST "http://localhost:5000/mcp" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "method": "tools/call",
+    "params": {
+      "name": "getConditionByName",
+      "arguments": { "name": "Haste" }
+    },
+    "id": 1
+  }' | jq .
 ```
 
 ---
@@ -189,25 +185,16 @@ Connect to the Streamable HTTP endpoint: `http://localhost:5000/mcp`
 
 ```
 TibiaMcp/
-├── Crawlers/           # Wiki scraping logic
-│   ├── CrawlerBase.cs         # Abstract base class (HTTP, HTML helpers)
-│   ├── ConditionCrawler.cs    # Special Conditions crawler
-│   └── CrawlerRunner.cs       # Orchestrator + persistence
-├── Data/
-│   └── AppDbContext.cs        # EF Core DbContext
 ├── Models/
-│   ├── Player.cs              # Player entity
-│   ├── Guild.cs               # Guild entity
-│   ├── GuildMember.cs         # Guild membership entity
-│   ├── Condition.cs           # Condition entity
-│   └── ConditionSection.cs    # Condition section entity
+│   ├── Condition.cs              # Condition entity
+│   └── ConditionSection.cs       # Condition section entity
+├── Services/
+│   └── ConditionWikiService.cs   # Wiki fetching, parsing, caching
 ├── Tools/
-│   ├── PlayerTools.cs         # Player MCP tools
-│   ├── GuildTools.cs          # Guild MCP tools
-│   └── ConditionTools.cs      # Condition MCP tools
-├── Program.cs                 # Entry point, DI, MCP config
-├── appsettings.json           # Configuration
-└── TibiaMcp.Server.csproj    # Project file
+│   └── ConditionTools.cs         # MCP tool definitions
+├── Program.cs                    # Entry point, DI, MCP config
+├── appsettings.json              # Configuration
+└── TibiaMcp.Server.csproj       # Project file
 ```
 
 ### Adding a New Tool
@@ -227,12 +214,6 @@ public class MyTools
 }
 ```
 
-### Adding a New Crawler
-
-1. Create a class inheriting from `CrawlerBase`
-2. Use `FetchPageAsync()` and the HTML helpers for parsing
-3. Register the crawler in DI in `Program.cs`
-
 ---
 
 ## ⚙️ Configuration
@@ -241,16 +222,9 @@ All configuration is in `appsettings.json`:
 
 | Key | Description | Default |
 |-----|-------------|---------|
-| `ConnectionStrings:DefaultConnection` | PostgreSQL connection string | — |
 | `Logging:LogLevel:Default` | Default log level | `Information` |
 
-### Environment Variables
-
-Override settings via environment variables:
-
-```bash
-export ConnectionStrings__DefaultConnection="Host=...;Database=...;Username=...;Password=..."
-```
+No database is required — all data is fetched live from the wiki and cached in memory.
 
 ---
 

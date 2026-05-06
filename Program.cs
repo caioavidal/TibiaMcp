@@ -4,11 +4,13 @@ using TibiaMcp.Server.Tools;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// ── HttpClient for wiki scraping ────────────────────────────────────────
+// ── In-memory cache & HttpClient for wiki scraping ────────────────────
 // Fandom uses Cloudflare which blocks .NET's HttpClient TLS fingerprint.
 // We use a CookieContainer to capture the __cf_bm cookie from the 403
 // challenge response, then reuse it on the MediaWiki API (which is
 // allowed through with the cookie).
+builder.Services.AddMemoryCache();
+
 var cookieContainer = new CookieContainer();
 
 builder.Services.AddHttpClient<ConditionWikiService>(client =>

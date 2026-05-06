@@ -2,27 +2,42 @@ using System.Net;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using HtmlAgilityPack;
+using Microsoft.Extensions.Caching.Memory;
 using TibiaMcp.Server.Models;
 
 namespace TibiaMcp.Server.Services;
 
 /// <summary>
 /// Fetches condition data from the Tibia Fandom Wiki in real time.
+/// Results are cached in memory because the wiki content changes infrequently.
 /// </summary>
 public partial class ConditionWikiService
 {
     private const string WikiBaseUrl = "https://tibia.fandom.com";
     private const string ApiBaseUrl = "https://tibia.fandom.com/api.php";
+
+    // Cache keys
+    private const string CacheKeyListing = "conditions:listing";
+    private const string CacheKeyDetailPrefix = "conditions:detail:";
+
+    // Cache duration – wiki content is stable, 2 hours is safe
+    private static readonly TimeSpan CacheDuration = TimeSpan.FromHours(2);
+
     private readonly HttpClient _httpClient;
+    private readonly IMemoryCache _cache;
     private readonly ILogger<ConditionWikiService> _logger;
 
     // Cloudflare cookie management
     private DateTime _cookieExpiry = DateTime.MinValue;
     private readonly SemaphoreSlim _warmupLock = new(1, 1);
 
-    public ConditionWikiService(HttpClient httpClient, ILogger<ConditionWikiService> logger)
+    public ConditionWikiService(
+        HttpClient httpClient,
+        IMemoryCache cache,
+        ILogger<ConditionWikiService> logger)
     {
         _httpClient = httpClient;
+        _cache = cache;
         _logger = logger;
     }
 
@@ -32,21 +47,37 @@ public partial class ConditionWikiService
 
     /// <summary>
     /// Fetches the Special Conditions listing from the wiki.
+    /// Results are cached in memory for <see cref="CacheDuration"/>.
     /// </summary>
     public async Task<List<Condition>> GetListingAsync(CancellationToken ct = default)
     {
+        if (_cache.TryGetValue<List<Condition>>(CacheKeyListing, out var cached))
+            return cached!;
+
         var doc = await FetchPageViaApiAsync("Special_Conditions", ct);
         if (doc == null) return [];
 
-        return ParseListingPage(doc);
+        var results = ParseListingPage(doc);
+
+        _cache.Set(CacheKeyListing, results, CacheDuration);
+        _logger.LogDebug("Cached condition listing ({Count} items) for {Duration}",
+            results.Count, CacheDuration);
+
+        return results;
     }
 
     /// <summary>
     /// Fetches a single condition by name and returns it with its sections populated.
+    /// Results are cached in memory for <see cref="CacheDuration"/>.
     /// </summary>
     public async Task<Condition?> GetConditionAsync(string name, CancellationToken ct = default)
     {
         var pageName = name.Replace(' ', '_');
+        var cacheKey = $"{CacheKeyDetailPrefix}{pageName}";
+
+        if (_cache.TryGetValue<Condition>(cacheKey, out var cached))
+            return cached;
+
         var url = $"{WikiBaseUrl}/wiki/{Uri.EscapeDataString(pageName)}";
 
         var doc = await FetchPageViaApiAsync(pageName, ct);
@@ -55,7 +86,7 @@ public partial class ConditionWikiService
         var intro = ExtractIntroParagraph(doc);
         var rawSections = ExtractSections(doc);
 
-        return new Condition
+        var result = new Condition
         {
             Name = name,
             WikiPageName = pageName,
@@ -73,6 +104,11 @@ public partial class ConditionWikiService
                 })
                 .ToList()
         };
+
+        _cache.Set(cacheKey, result, CacheDuration);
+        _logger.LogDebug("Cached condition '{Name}' for {Duration}", name, CacheDuration);
+
+        return result;
     }
 
     /// <summary>
