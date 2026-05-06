@@ -13,7 +13,7 @@ builder.Services.AddMemoryCache();
 
 var cookieContainer = new CookieContainer();
 
-builder.Services.AddHttpClient<ConditionWikiService>(client =>
+void ConfigureWikiClient(HttpClient client)
 {
     client.BaseAddress = new Uri("https://tibia.fandom.com");
     client.Timeout = TimeSpan.FromSeconds(30);
@@ -28,8 +28,12 @@ builder.Services.AddHttpClient<ConditionWikiService>(client =>
         "image/avif,image/webp,image/apng,*/*;q=0.8");
 
     client.DefaultRequestHeaders.AcceptLanguage.ParseAdd("en-US,en;q=0.9");
+}
 
-}).ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+// Each typed HttpClient gets its own SocketsHttpHandler, but they all
+// share the same CookieContainer so the Cloudflare __cf_bm cookie is
+// available to every service.
+SocketsHttpHandler CreateHandler() => new()
 {
     MaxConnectionsPerServer = 2,
     PooledConnectionLifetime = TimeSpan.FromMinutes(2),
@@ -38,7 +42,13 @@ builder.Services.AddHttpClient<ConditionWikiService>(client =>
                               | System.Net.DecompressionMethods.Brotli,
     UseCookies = true,
     CookieContainer = cookieContainer,
-});
+};
+
+builder.Services.AddHttpClient<ConditionWikiService>(ConfigureWikiClient)
+    .ConfigurePrimaryHttpMessageHandler(CreateHandler);
+
+builder.Services.AddHttpClient<SpellWikiService>(ConfigureWikiClient)
+    .ConfigurePrimaryHttpMessageHandler(CreateHandler);
 
 // ── MCP Server ────────────────────────────────────────────────────────────
 builder.Services
@@ -51,7 +61,8 @@ builder.Services
         };
     })
     .WithHttpTransport()
-    .WithTools<ConditionTools>();
+    .WithTools<ConditionTools>()
+    .WithTools<SpellTools>();
 
 var app = builder.Build();
 

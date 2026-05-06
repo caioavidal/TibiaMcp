@@ -46,9 +46,9 @@ public class ConditionTools
         var condition = await _wiki.GetConditionAsync(name);
 
         if (condition == null)
-            _logger.LogWarning("Condition '{Name}' not found on wiki.", name);
+            _logger.LogWarning("Condition '{Name}' not found on wiki", name);
         else
-            _logger.LogInformation("Returned condition '{Name}' with {Sections} sections.", name, condition.Sections.Count);
+            _logger.LogInformation("Returned condition '{Name}' with {Sections} sections", name, condition.Sections.Count);
 
         return condition;
     }

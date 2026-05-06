@@ -26,11 +26,30 @@ AI assistants like Claude, ChatGPT, and others can use MCP tools to query Tibia 
 
 ## 📋 Available MCP Tools
 
+### Conditions
+
 | Tool | Description |
 |------|-------------|
 | `getConditions` | List all special conditions with optional filters (`type`, `search`) |
 | `getConditionByName` | Get a single condition by name with its detailed description and sections |
 
+**`getConditions`** returns the full listing with condition name, type (Harmful, Positive, Neutral, Mixed, Taints), and short effect description. Supports filtering by `type` or `search` (name substring).
+
+**`getConditionByName`** returns a single condition with its detailed description and extracted sections (Effect, Notes, History, etc.).
+
+### Spells
+
+| Tool | Description |
+|------|-------------|
+| `getSpells` | List all instant spells with optional filters (`search`, `group`, `vocation`) |
+| `getSpellByName` | Get a single spell by name with full infobox data and sections |
+| `getSpellByWords` | Find a spell by its magic words (e.g., `"exori gran ico"`) |
+
+**`getSpells`** returns the full instant-spell listing with name, words, level, mana, group, premium status, and effect. Filter by `search` (name or words), `group` (Attack, Healing, Support, etc.), or `vocation` (Knight, Sorcerer, Druid, Paladin).
+
+**`getSpellByName`** returns detailed infobox properties (magic type, cooldown, base power, version, status), plus the introductory description and sections.
+
+**`getSpellByWords`** looks up a spell by its cast command — useful when you see a spell being used and want to identify it.
 
 ---
 
@@ -99,6 +118,32 @@ curl -s -X POST "http://localhost:5000/mcp" \
     "params": {
       "name": "getConditionByName",
       "arguments": { "name": "Haste" }
+    },
+    "id": 1
+  }' | jq .
+
+# List all spells
+curl -s -X POST "http://localhost:5000/mcp" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "method": "tools/call",
+    "params": {
+      "name": "getSpells",
+      "arguments": {}
+    },
+    "id": 1
+  }' | jq .
+
+# Get a spell by its magic words
+curl -s -X POST "http://localhost:5000/mcp" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "jsonrpc": "2.0",
+    "method": "tools/call",
+    "params": {
+      "name": "getSpellByWords",
+      "arguments": { "words": "exori gran ico" }
     },
     "id": 1
   }' | jq .
