@@ -27,6 +27,9 @@ obj/
 *.log
 *.tmp
 
+## Misc / Stray files
+nul
+
 ## OS
 .DS_Store
 Thumbs.db
