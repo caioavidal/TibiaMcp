@@ -1,4 +1,4 @@
-# 🎮 TibiaMcp — MCP Server for Tibia Special Conditions
+# 🎮 TibiaMcp — MCP Server for Tibia
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![.NET](https://img.shields.io/badge/.NET-10.0-512BD4?logo=dotnet)](https://dotnet.microsoft.com/)
