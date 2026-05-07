@@ -83,8 +83,23 @@ public partial class ConditionWikiService
         var doc = await FetchPageViaApiAsync(pageName, ct);
         if (doc == null) return null;
 
+        // Extract infobox values (version, status)
+        string? version = null;
+        string? status = null;
+        var parser = doc.DocumentNode.SelectSingleNode("//div[contains(@class,'mw-parser-output')]");
+        if (parser != null)
+        {
+            var aside = parser.SelectSingleNode(".//aside");
+            if (aside != null)
+            {
+                version = GetInfoBoxValue(aside, "implemented");
+                status = GetInfoBoxValue(aside, "status");
+            }
+        }
+
         var intro = ExtractIntroParagraph(doc);
         var rawSections = ExtractSections(doc);
+        var fullDescription = ExtractFullDescription(doc);
 
         var result = new Condition
         {
@@ -93,7 +108,10 @@ public partial class ConditionWikiService
             Url = url,
             Type = "Unknown",   // we'd need the listing table to know the type
             EffectDescription = string.Empty,
+            Version = version,
+            Status = status,
             DetailedDescription = intro != null ? SanitizeText(intro) : null,
+            FullDescription = fullDescription != null ? SanitizeText(fullDescription) : null,
             Sections = rawSections
                 .Select((s, i) => new ConditionSection
                 {
@@ -315,8 +333,58 @@ public partial class ConditionWikiService
     }
 
     // ──────────────────────────────────────────────────────────────────────
-    //  Detail page parsing  (moved from old CrawlerBase)
+    //  Detail page parsing
     // ──────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Gets a value from the portable infobox by <c>data-source</c> attribute.
+    /// </summary>
+    private static string? GetInfoBoxValue(HtmlNode aside, string dataSource)
+    {
+        var div = aside.SelectSingleNode($".//div[@data-source='{dataSource}']");
+        if (div == null) return null;
+
+        var valueDiv = div.SelectSingleNode(".//div[contains(@class,'pi-data-value')]");
+        var value = valueDiv != null
+            ? WebUtility.HtmlDecode(valueDiv.InnerText.Trim())
+            : WebUtility.HtmlDecode(div.InnerText.Trim());
+
+        return string.IsNullOrWhiteSpace(value) ? null : value;
+    }
+
+    /// <summary>
+    /// Extracts all paragraphs from the page (for conditions that have no
+    /// headings/sections, like "Logout Block"). Stops before the navbox.
+    /// </summary>
+    private static string? ExtractFullDescription(HtmlDocument doc)
+    {
+        var parser = doc.DocumentNode.SelectSingleNode("//div[contains(@class,'mw-parser-output')]");
+        if (parser == null) return null;
+
+        // The API wraps the page in <div class="mw-content-ltr mw-parser-output">,
+        // and FetchPageViaApiAsync wraps it again in another <div class="mw-parser-output">.
+        // Find the inner content div to iterate its direct children.
+        var content = parser.SelectSingleNode(".//div[contains(@class,'mw-parser-output')]")
+                      ?? parser;
+
+        var parts = new List<string>();
+        foreach (var child in content.ChildNodes)
+        {
+            if (child.Name == "h2" || child.Name == "h3")
+                break;
+            if (child.Name == "table" && child.HasClass("navbox"))
+                break;
+            if (child.Name == "p")
+            {
+                var text = WebUtility.HtmlDecode(child.InnerText.Trim());
+                if (!string.IsNullOrWhiteSpace(text))
+                    parts.Add(text);
+            }
+        }
+
+        var combined = string.Join("\n\n", parts);
+        return combined.Length > 10 ? combined : null;
+    }
 
     internal static string? ExtractIntroParagraph(HtmlDocument doc)
     {

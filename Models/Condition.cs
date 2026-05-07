@@ -23,6 +23,15 @@ public class Condition
     /// <summary>Detailed description / introductory paragraph from the condition page.</summary>
     public string? DetailedDescription { get; init; }
 
+    /// <summary>Version when the condition was introduced (from infobox).</summary>
+    public string? Version { get; init; }
+
+    /// <summary>Status (e.g., "Active") from infobox.</summary>
+    public string? Status { get; init; }
+
+    /// <summary>All text paragraphs from the page (for conditions without headings/sections).</summary>
+    public string? FullDescription { get; init; }
+
     /// <summary>Sections extracted from the condition detail page.</summary>
     public List<ConditionSection> Sections { get; init; } = [];
 }
