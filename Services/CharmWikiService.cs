@@ -8,33 +8,34 @@ using TibiaMcp.Server.Models;
 namespace TibiaMcp.Server.Services;
 
 /// <summary>
-/// Fetches creature data from the Tibia Fandom Wiki in real time.
+/// Fetches charm data from the Tibia Fandom Wiki in real time.
 /// Results are cached in memory because the wiki content changes infrequently.
 /// </summary>
-public partial class CreatureWikiService
+public partial class CharmWikiService
 {
     private const string WikiBaseUrl = "https://tibia.fandom.com";
     private const string ApiBaseUrl = "https://tibia.fandom.com/api.php";
 
     // Cache keys
-    private const string CacheKeyListing = "creatures:listing";
-    private const string CacheKeyDetailPrefix = "creatures:detail:";
+    private const string CacheKeyFeature = "charms:feature";
+    private const string CacheKeyListing = "charms:listing";
+    private const string CacheKeyDetailPrefix = "charms:detail:";
 
     // Cache duration – wiki content is stable, 2 hours is safe
     private static readonly TimeSpan CacheDuration = TimeSpan.FromHours(2);
 
     private readonly HttpClient _httpClient;
     private readonly IMemoryCache _cache;
-    private readonly ILogger<CreatureWikiService> _logger;
+    private readonly ILogger<CharmWikiService> _logger;
 
     // Cloudflare cookie management
     private DateTime _cookieExpiry = DateTime.MinValue;
     private readonly SemaphoreSlim _warmupLock = new(1, 1);
 
-    public CreatureWikiService(
+    public CharmWikiService(
         HttpClient httpClient,
         IMemoryCache cache,
-        ILogger<CreatureWikiService> logger)
+        ILogger<CharmWikiService> logger)
     {
         _httpClient = httpClient;
         _cache = cache;
@@ -46,37 +47,58 @@ public partial class CreatureWikiService
     // ──────────────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Fetches the full creature listing from the wiki (List_of_Creatures).
-    /// Returns name, HP, exp, version, and wiki URL for every creature.
-    /// Results are cached in memory for <see cref="CacheDuration"/>.
+    /// Gets the charm feature overview from the Cyclopedia page.
+    /// Returns the introductory paragraphs about the charms system.
     /// </summary>
-    public async Task<List<Creature>> GetListingAsync(CancellationToken ct = default)
+    public async Task<string?> GetFeatureAsync(CancellationToken ct = default)
     {
-        if (_cache.TryGetValue<List<Creature>>(CacheKeyListing, out var cached))
+        if (_cache.TryGetValue<string>(CacheKeyFeature, out var cached))
+            return cached;
+
+        var doc = await FetchPageViaApiAsync("Cyclopedia", ct);
+        if (doc == null) return null;
+
+        var result = ExtractCharmFeature(doc);
+
+        if (result != null)
+        {
+            _cache.Set(CacheKeyFeature, result, CacheDuration);
+            _logger.LogDebug("Cached charm feature info for {Duration}", CacheDuration);
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Fetches the list of all charms from the Cyclopedia page.
+    /// Returns name, type, effect, and cost for each charm.
+    /// </summary>
+    public async Task<List<Charm>> GetListingAsync(CancellationToken ct = default)
+    {
+        if (_cache.TryGetValue<List<Charm>>(CacheKeyListing, out var cached))
             return cached!;
 
-        var doc = await FetchPageViaApiAsync("List_of_Creatures", ct);
+        var doc = await FetchPageViaApiAsync("Cyclopedia", ct);
         if (doc == null) return [];
 
         var results = ParseListingPage(doc);
 
         _cache.Set(CacheKeyListing, results, CacheDuration);
-        _logger.LogDebug("Cached creature listing ({Count} items) for {Duration}",
+        _logger.LogDebug("Cached charm listing ({Count} items) for {Duration}",
             results.Count, CacheDuration);
 
         return results;
     }
 
     /// <summary>
-    /// Fetches a single creature by name, including its full infobox and sections.
-    /// Results are cached in memory for <see cref="CacheDuration"/>.
+    /// Fetches a single charm by name, including its full infobox and sections.
     /// </summary>
-    public async Task<Creature?> GetCreatureByNameAsync(string name, CancellationToken ct = default)
+    public async Task<Charm?> GetCharmByNameAsync(string name, CancellationToken ct = default)
     {
         var pageName = name.Replace(' ', '_');
         var cacheKey = $"{CacheKeyDetailPrefix}{pageName}";
 
-        if (_cache.TryGetValue<Creature>(cacheKey, out var cached))
+        if (_cache.TryGetValue<Charm>(cacheKey, out var cached))
             return cached;
 
         var url = $"{WikiBaseUrl}/wiki/{Uri.EscapeDataString(pageName)}";
@@ -87,26 +109,28 @@ public partial class CreatureWikiService
         var result = ParseDetailPage(doc, name, url);
 
         _cache.Set(cacheKey, result, CacheDuration);
-        _logger.LogDebug("Cached creature '{Name}' for {Duration}", name, CacheDuration);
+        _logger.LogDebug("Cached charm '{Name}' for {Duration}", name, CacheDuration);
 
         return result;
     }
 
     /// <summary>
-    /// Searches creatures by name from the full listing.
+    /// Searches charms by name from the listing.
     /// </summary>
-    public async Task<List<Creature>> SearchCreaturesAsync(
+    public async Task<List<Charm>> SearchCharmsAsync(
         string? search = null,
+        string? type = null,
         CancellationToken ct = default)
     {
         var all = await GetListingAsync(ct);
 
         if (!string.IsNullOrWhiteSpace(search))
-        {
-            var searchLower = search.ToLowerInvariant();
             all = all.Where(c =>
                 c.Name.Contains(search, StringComparison.OrdinalIgnoreCase)).ToList();
-        }
+
+        if (!string.IsNullOrWhiteSpace(type))
+            all = all.Where(c =>
+                c.Type != null && c.Type.Equals(type, StringComparison.OrdinalIgnoreCase)).ToList();
 
         return all;
     }
@@ -128,7 +152,7 @@ public partial class CreatureWikiService
                 DateTime.UtcNow < _cookieExpiry.AddMinutes(-5))
                 return;
 
-            _logger.LogDebug("Refreshing Cloudflare cookie via warm-up request...");
+            _logger.LogDebug("Refreshing Cloudflare cookie via warm-up request…");
             using var response = await _httpClient.GetAsync(WikiBaseUrl, ct);
             _cookieExpiry = DateTime.UtcNow.AddMinutes(25);
         }
@@ -202,18 +226,57 @@ public partial class CreatureWikiService
     }
 
     // ──────────────────────────────────────────────────────────────────────
-    //  Listing page parsing  (List_of_Creatures)
+    //  Feature info extraction  (Cyclopedia → #Charms intro paragraphs)
     // ──────────────────────────────────────────────────────────────────────
 
-    private List<Creature> ParseListingPage(HtmlDocument doc)
+    private static string? ExtractCharmFeature(HtmlDocument doc)
     {
-        var results = new List<Creature>();
+        var parser = doc.DocumentNode.SelectSingleNode("//div[contains(@class,'mw-parser-output')]");
+        if (parser == null) return null;
+
+        var anchor = parser.SelectSingleNode(".//span[@id='Charms']");
+        var heading = anchor?.Ancestors("h2").FirstOrDefault();
+        if (heading == null) return null;
+
+        var parts = new List<string>();
+        var next = heading.NextSibling;
+        while (next != null && next.Name != "h2")
+        {
+            if (next.Name == "p")
+            {
+                var text = WebUtility.HtmlDecode(next.InnerText.Trim());
+                if (!string.IsNullOrWhiteSpace(text))
+                    parts.Add(text);
+            }
+            else if (next.Name == "h3")
+            {
+                // Stop before the "List of Charms" subheading
+                break;
+            }
+            next = next.NextSibling;
+        }
+
+        var combined = string.Join("\n\n", parts);
+        return combined.Length > 10 ? combined : null;
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    //  Listing page parsing  (Cyclopedia → "List of Charms" table)
+    // ──────────────────────────────────────────────────────────────────────
+
+    private List<Charm> ParseListingPage(HtmlDocument doc)
+    {
+        var results = new List<Charm>();
 
         var parser = doc.DocumentNode.SelectSingleNode("//div[contains(@class,'mw-parser-output')]");
         if (parser == null) return results;
 
-        // The listing is a single table with columns: Name | (icon) | HP | Exp | Version
-        var table = parser.SelectSingleNode(".//table");
+        // Find the "List of Charms" subheading and its following table
+        var listHeading = parser.SelectSingleNode(".//span[@id='Charms']")
+            ?.Ancestors("h2").FirstOrDefault()
+            ?.SelectSingleNode("./following-sibling::h3[1]");
+
+        var table = listHeading?.SelectSingleNode("./following-sibling::table");
         if (table == null) return results;
 
         var rows = table.SelectNodes(".//tr");
@@ -222,9 +285,9 @@ public partial class CreatureWikiService
         foreach (var row in rows.Skip(1))
         {
             var cells = row.SelectNodes("./td");
-            if (cells == null || cells.Count < 4) continue;
+            if (cells == null || cells.Count < 3) continue;
 
-            // Name (column 0) - the text link, not the icon link
+            // Name (column 0) — text link, not the icon link
             var nameLink = cells[0]
                 .SelectNodes(".//a")?
                 .FirstOrDefault(l => !string.IsNullOrWhiteSpace(l.InnerText));
@@ -234,31 +297,31 @@ public partial class CreatureWikiService
                 ? $"{WikiBaseUrl}/wiki/{Uri.EscapeDataString(name)}"
                 : $"{WikiBaseUrl}{href}";
 
-            // HP (column 2)
-            var hp = WebUtility.HtmlDecode(cells[2].InnerText.Trim());
-            if (string.IsNullOrWhiteSpace(hp) || hp == "?") hp = null;
+            // Type (column 2)
+            var type = WebUtility.HtmlDecode(cells[2].InnerText.Trim());
+            if (string.IsNullOrWhiteSpace(type)) type = null;
 
-            // Exp (column 3)
-            var exp = WebUtility.HtmlDecode(cells[3].InnerText.Trim());
-            if (string.IsNullOrWhiteSpace(exp) || exp == "?") exp = null;
+            // Effect (column 3)
+            var effect = WebUtility.HtmlDecode(cells[3].InnerText.Trim());
+            if (string.IsNullOrWhiteSpace(effect)) effect = null;
 
-            // Version (column 4)
-            string? version = null;
+            // Cost (column 4)
+            string? cost = null;
             if (cells.Count >= 5)
             {
-                version = WebUtility.HtmlDecode(cells[4].InnerText.Trim());
-                if (string.IsNullOrWhiteSpace(version)) version = null;
+                cost = WebUtility.HtmlDecode(cells[4].InnerText.Trim());
+                if (string.IsNullOrWhiteSpace(cost)) cost = null;
             }
 
             if (!string.IsNullOrWhiteSpace(name))
             {
-                results.Add(new Creature
+                results.Add(new Charm
                 {
                     Name = SanitizeText(name),
                     Url = fullUrl,
-                    Hp = hp,
-                    Exp = exp,
-                    Version = version
+                    Type = type,
+                    Effect = effect,
+                    Cost = cost
                 });
             }
         }
@@ -270,116 +333,42 @@ public partial class CreatureWikiService
     //  Detail page parsing
     // ──────────────────────────────────────────────────────────────────────
 
-    private static Creature ParseDetailPage(HtmlDocument doc, string name, string url)
+    private static Charm ParseDetailPage(HtmlDocument doc, string name, string url)
     {
         var parser = doc.DocumentNode.SelectSingleNode("//div[contains(@class,'mw-parser-output')]");
 
-        // -- Extract all infobox values --
-        string? hp = null, exp = null;
-        int? speed = null;
-        string? maxDamage = null;
-        int? armor = null;
-        string? mitigation = null, elements = null;
-        string? summon = null, convince = null;
-        string? classification = null, spawnType = null;
-        bool? isBoss = null, illusionable = null, pushable = null, pushes = null;
-        string? bestiaryClass = null, bestiaryDifficulty = null, behaviour = null;
-        string? charmPoints = null, killsToUnlock = null;
-        string? bosstiaryCategory = null;
-        string? paralysable = null;
-        bool? senseInvisibility = null;
-        string? runsAt = null, walksAround = null, walksThrough = null;
-        string? version = null, status = null;
+        // Extract infobox values
+        string? type = null;
+        string? cost = null;
+        string? version = null;
+        string? status = null;
 
         if (parser != null)
         {
             var aside = parser.SelectSingleNode(".//aside");
             if (aside != null)
             {
-                // Combat
-                hp = GetInfoBoxValue(aside, "hp");
-                exp = GetInfoBoxValue(aside, "exp");
-                speed = ParseInt(GetInfoBoxValue(aside, "speed"));
-                maxDamage = GetInfoBoxValue(aside, "maxdmg");
-                armor = ParseInt(GetInfoBoxValue(aside, "armor"));
-                mitigation = GetInfoBoxValue(aside, "mitigation");
-                elements = GetInfoBoxValue(aside, "usedelements");
-                summon = GetInfoBoxValue(aside, "summon");
-                convince = GetInfoBoxValue(aside, "convince");
-
-                // General
-                classification = GetInfoBoxValue(aside, "primarytype");
-                spawnType = GetInfoBoxValue(aside, "spawntype");
-                isBoss = ParseBool(GetInfoBoxValue(aside, "isboss"), "Boss");
-                illusionable = ParseBool(GetInfoBoxValue(aside, "illusionable"), yesMark);
-                pushable = ParseBool(GetInfoBoxValue(aside, "pushable"), yesMark);
-                pushes = ParseBool(GetInfoBoxValue(aside, "pushobjects"), yesMark);
-
-                // Bestiary
-                bestiaryClass = GetInfoBoxValue(aside, "bestiaryclass");
-                bestiaryDifficulty = GetInfoBoxValueByLabel(aside, "bestiarylevel", "Difficulty");
-                behaviour = GetInfoBoxValue(aside, "attacktype");
-                charmPoints = GetInfoBoxValueByLabel(aside, "occurrence", "Charm Points");
-                killsToUnlock = GetInfoBoxValueByLabel(aside, "occurrence", "Kills to Unlock");
-
-                // Bosstiary
-                bosstiaryCategory = GetInfoBoxValue(aside, "bosstiaryclass");
-
-                // Immunities
-                paralysable = GetInfoBoxValue(aside, "paraimmune");
-                senseInvisibility = ParseBool(GetInfoBoxValue(aside, "senseinvis"), yesMark);
-
-                // Behavioural
-                runsAt = GetInfoBoxValue(aside, "runsat");
-                walksAround = GetInfoBoxValue(aside, "walksaround");
-                walksThrough = GetInfoBoxValue(aside, "walksthrough");
-
-                // Other
+                type = GetInfoBoxValue(aside, "type");
+                cost = GetInfoBoxValue(aside, "cost");
                 version = GetInfoBoxValue(aside, "implemented");
                 status = GetInfoBoxValue(aside, "status");
             }
         }
 
         var detailedDescription = ExtractIntroParagraph(doc);
-        var loot = ExtractLoot(doc);
         var rawSections = ExtractSections(doc);
 
-        return new Creature
+        return new Charm
         {
             Name = name,
             Url = url,
-            Hp = hp,
-            Exp = exp,
-            Classification = classification,
-            Speed = speed,
-            MaxDamage = maxDamage,
-            Armor = armor,
-            Mitigation = mitigation,
-            Elements = elements,
-            Summon = summon,
-            Convince = convince,
-            SpawnType = spawnType,
-            IsBoss = isBoss,
-            Illusionable = illusionable,
-            Pushable = pushable,
-            Pushes = pushes,
-            BestiaryClass = bestiaryClass,
-            BestiaryDifficulty = bestiaryDifficulty,
-            Behaviour = behaviour,
-            CharmPoints = charmPoints,
-            KillsToUnlock = killsToUnlock,
-            BosstiaryCategory = bosstiaryCategory,
-            Paralysable = paralysable,
-            SenseInvisibility = senseInvisibility,
-            RunsAt = runsAt,
-            WalksAround = walksAround,
-            WalksThrough = walksThrough,
+            Type = type,
+            Cost = cost,
             Version = version,
             Status = status,
-            Loot = loot,
             DetailedDescription = detailedDescription,
             Sections = rawSections
-                .Select((s, i) => new CreatureSection
+                .Select((s, i) => new CharmSection
                 {
                     Heading = SanitizeText(s.Heading),
                     HeadingId = s.HeadingId,
@@ -390,9 +379,6 @@ public partial class CreatureWikiService
         };
     }
 
-    /// <summary>
-    /// Gets a value from the portable infobox by <c>data-source</c> attribute.
-    /// </summary>
     private static string? GetInfoBoxValue(HtmlNode aside, string dataSource)
     {
         var div = aside.SelectSingleNode($".//div[@data-source='{dataSource}']");
@@ -406,140 +392,9 @@ public partial class CreatureWikiService
         return string.IsNullOrWhiteSpace(value) ? null : value;
     }
 
-    /// <summary>
-    /// Gets a value from the portable infobox by <c>data-source</c> and label text.
-    /// Handles cases where the same <c>data-source</c> is used multiple times
-    /// with different labels (e.g., <c>occurrence</c> used for Occurrence, Charm Points,
-    /// and Kills to Unlock).
-    /// </summary>
-    private static string? GetInfoBoxValueByLabel(HtmlNode aside, string dataSource, string label)
-    {
-        var divs = aside.SelectNodes($".//div[@data-source='{dataSource}']");
-        if (divs == null) return null;
-
-        foreach (var div in divs)
-        {
-            var labelEl = div.SelectSingleNode(".//h3[contains(@class,'pi-data-label')]");
-            if (labelEl == null) continue;
-
-            var labelText = WebUtility.HtmlDecode(labelEl.InnerText.Trim());
-            if (!labelText.Equals(label, StringComparison.OrdinalIgnoreCase))
-                continue;
-
-            var valueDiv = div.SelectSingleNode(".//div[contains(@class,'pi-data-value')]");
-            var value = valueDiv != null
-                ? WebUtility.HtmlDecode(valueDiv.InnerText.Trim())
-                : WebUtility.HtmlDecode(div.InnerText.Trim());
-
-            return string.IsNullOrWhiteSpace(value) ? null : value;
-        }
-
-        return null;
-    }
-
-    private static bool? ParseBool(string? value, string match)
-    {
-        if (value == null) return null;
-        return value.Contains(match, StringComparison.Ordinal);
-    }
-
     // ──────────────────────────────────────────────────────────────────────
-    //  Intro / Sections (shared with other services)
+    //  Intro / Sections
     // ──────────────────────────────────────────────────────────────────────
-
-    // ──────────────────────────────────────────────────────────────────────
-    //  Loot table parsing
-    // ──────────────────────────────────────────────────────────────────────
-
-    /// <summary>
-    /// Extracts the loot table from the creature's Loot section.
-    /// Returns null if no loot table is found.
-    /// </summary>
-    private static List<LootItem>? ExtractLoot(HtmlDocument doc)
-    {
-        var parser = doc.DocumentNode.SelectSingleNode("//div[contains(@class,'mw-parser-output')]");
-        if (parser == null) return null;
-
-        // Find the Loot heading (h2 or h3 with id="Loot")
-        var lootAnchor = parser.SelectSingleNode(".//span[@id='Loot']");
-        if (lootAnchor == null) return null;
-
-        var headingNode = lootAnchor.Ancestors("h2").FirstOrDefault()
-                          ?? lootAnchor.Ancestors("h3").FirstOrDefault();
-        if (headingNode == null) return null;
-
-        // Walk siblings after the heading until the next h2/h3
-        var next = headingNode.NextSibling;
-        while (next != null && next.Name != "h2" && next.Name != "h3")
-        {
-            if (next.Name == "table")
-            {
-                var rows = next.SelectNodes(".//tr");
-                if (rows == null || rows.Count < 2) break;
-
-                var results = new List<LootItem>();
-                foreach (var row in rows.Skip(1))
-                {
-                    var cells = row.SelectNodes("./td");
-                    if (cells == null || cells.Count < 2) continue;
-
-                    // Item name (column 1, index 1) - column 0 is the icon
-                    var itemLink = cells[1]
-                        .SelectNodes(".//a")?
-                        .FirstOrDefault(l => !string.IsNullOrWhiteSpace(l.InnerText));
-                    var itemName = WebUtility.HtmlDecode(
-                        itemLink?.InnerText.Trim() ?? cells[1].InnerText.Trim());
-                    if (string.IsNullOrWhiteSpace(itemName)) continue;
-
-                    // Task (column 2)
-                    string? task = null;
-                    if (cells.Count >= 3)
-                    {
-                        task = WebUtility.HtmlDecode(cells[2].InnerText.Trim());
-                        if (string.IsNullOrWhiteSpace(task)) task = null;
-                    }
-
-                    // Quantity (column 3)
-                    string? quantity = null;
-                    if (cells.Count >= 4)
-                    {
-                        quantity = WebUtility.HtmlDecode(cells[3].InnerText.Trim());
-                        if (string.IsNullOrWhiteSpace(quantity)) quantity = null;
-                    }
-
-                    // Average (column 4)
-                    string? average = null;
-                    if (cells.Count >= 5)
-                    {
-                        average = WebUtility.HtmlDecode(cells[4].InnerText.Trim());
-                        if (string.IsNullOrWhiteSpace(average)) average = null;
-                    }
-
-                    // Probability % (column 5)
-                    string? probability = null;
-                    if (cells.Count >= 6)
-                    {
-                        probability = WebUtility.HtmlDecode(cells[5].InnerText.Trim());
-                        if (string.IsNullOrWhiteSpace(probability)) probability = null;
-                    }
-
-                    results.Add(new LootItem
-                    {
-                        Name = SanitizeText(itemName),
-                        Task = task,
-                        Quantity = quantity,
-                        Average = average,
-                        Probability = probability
-                    });
-                }
-
-                return results.Count > 0 ? results : null;
-            }
-            next = next.NextSibling;
-        }
-
-        return null;
-    }
 
     internal static string? ExtractIntroParagraph(HtmlDocument doc)
     {
@@ -637,17 +492,6 @@ public partial class CreatureWikiService
     //  Helpers
     // ──────────────────────────────────────────────────────────────────────
 
-    private static readonly string yesMark = "\u2713";
-
-    private static int? ParseInt(string? value)
-    {
-        if (string.IsNullOrWhiteSpace(value)) return null;
-        var cleaned = IntCleanRegex().Replace(value, "");
-        if (int.TryParse(cleaned, out var result))
-            return result;
-        return null;
-    }
-
     private static string SanitizeText(string text)
     {
         if (string.IsNullOrWhiteSpace(text)) return string.Empty;
@@ -656,7 +500,4 @@ public partial class CreatureWikiService
 
     [GeneratedRegex(@"\s+")]
     private static partial Regex WhitespaceRegex();
-
-    [GeneratedRegex(@"[^\d-]")]
-    private static partial Regex IntCleanRegex();
 }

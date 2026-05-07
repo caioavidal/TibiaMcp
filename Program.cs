@@ -53,6 +53,9 @@ builder.Services.AddHttpClient<SpellWikiService>(ConfigureWikiClient)
 builder.Services.AddHttpClient<CreatureWikiService>(ConfigureWikiClient)
     .ConfigurePrimaryHttpMessageHandler(CreateHandler);
 
+builder.Services.AddHttpClient<CharmWikiService>(ConfigureWikiClient)
+    .ConfigurePrimaryHttpMessageHandler(CreateHandler);
+
 // ── MCP Server ────────────────────────────────────────────────────────────
 builder.Services
     .AddMcpServer(options =>
@@ -66,7 +69,8 @@ builder.Services
     .WithHttpTransport()
     .WithTools<ConditionTools>()
     .WithTools<SpellTools>()
-    .WithTools<CreatureTools>();
+    .WithTools<CreatureTools>()
+    .WithTools<CharmTools>();
 
 var app = builder.Build();
 
